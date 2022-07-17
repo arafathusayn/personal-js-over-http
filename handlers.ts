@@ -28,24 +28,70 @@ export const handleRun = async (context: RouterContext<"/run">) => {
     return;
   }
 
-  if (typeof code === "string" && code.includes("return")) {
+  if (typeof code === "string" && code.includes("console.log")) {
     try {
-      const result = await Promise.race([
-        Object.getPrototypeOf(async () => {}).constructor(
-          `
-          Deno = undefined;
-          ${code}
-        `,
-        )(),
-        timeout(timeoutMs),
-      ]);
+      const dirname = new URL(".", import.meta.url).pathname;
 
-      context.response.body = JSON.stringify(result);
+      const fileName = Math.floor(Math.random() * 1000000).toString();
+
+      const filePath = `${dirname}files/${fileName}.ts`;
+
+      const file = await Deno.create(filePath);
+
+      const evalCode = `const keys = Object.keys(Deno); \
+        keys.forEach((prop) => { \
+          Object.defineProperty(Deno, prop, { value: undefined }); }); \
+        ${code}`;
+
+      await file.write(new TextEncoder().encode(evalCode));
+
+      const process = Deno.run({
+        cmd: [
+          "deno",
+          "run",
+          "--allow-net",
+          "--v8-flags=--max-old-space-size=10",
+          filePath,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+      });
+
+      const promise = new Promise((resolve, reject) => {
+        const tid = setTimeout(async () => {
+          clearTimeout(tid);
+
+          const { code } = await process.status();
+
+          await Deno.remove(filePath);
+
+          const rawOutput = await process.output();
+
+          if (code === 0) {
+            resolve(
+              new TextDecoder()
+                .decode(rawOutput)
+                .slice(0, -1)
+                .replace(/file:\/\/\/.+files/gi, ""),
+            );
+          } else {
+            const rawError = await process.stderrOutput();
+            reject(
+              new TextDecoder()
+                .decode(rawError)
+                .slice(0, -1)
+                .replace(/file:\/\/\/.+files/gi, ""),
+            );
+          }
+        }, 0);
+      });
+
+      const result = await Promise.race([promise, timeout(timeoutMs)]);
+
+      context.response.body = result as string;
 
       return;
     } catch (error) {
-      console.log(error);
-
       context.response.status = 500;
       // console.error(error);
       context.response.body = JSON.stringify({
@@ -62,7 +108,7 @@ export const handleRun = async (context: RouterContext<"/run">) => {
   context.response.status = 400;
   context.response.body = JSON.stringify({
     success: false,
-    message: "invalid code. code must have a return statement",
+    message: "invalid code. code must have at least one console.log statement",
     data: null,
   });
 };
