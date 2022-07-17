@@ -29,6 +29,8 @@ export const handleRun = async (context: RouterContext<"/run">) => {
   }
 
   if (typeof code === "string" && code.includes("console.log")) {
+    let process: Deno.Process | undefined = undefined;
+
     try {
       const dirname = new URL(".", import.meta.url).pathname;
 
@@ -45,7 +47,7 @@ export const handleRun = async (context: RouterContext<"/run">) => {
 
       await file.write(new TextEncoder().encode(evalCode));
 
-      const process = Deno.run({
+      process = Deno.run({
         cmd: [
           "deno",
           "run",
@@ -61,27 +63,36 @@ export const handleRun = async (context: RouterContext<"/run">) => {
         const tid = setTimeout(async () => {
           clearTimeout(tid);
 
-          const { code } = await process.status();
+          if (!process) {
+            reject(null);
+            return;
+          }
 
-          await Deno.remove(filePath);
+          try {
+            const { code } = await process.status();
 
-          const rawOutput = await process.output();
+            await Deno.remove(filePath);
 
-          if (code === 0) {
-            resolve(
-              new TextDecoder()
-                .decode(rawOutput)
-                .slice(0, -1)
-                .replace(/file:\/\/\/.+files/gi, ""),
-            );
-          } else {
-            const rawError = await process.stderrOutput();
-            reject(
-              new TextDecoder()
-                .decode(rawError)
-                .slice(0, -1)
-                .replace(/file:\/\/\/.+files/gi, ""),
-            );
+            const rawOutput = await process.output();
+
+            if (code === 0) {
+              resolve(
+                new TextDecoder()
+                  .decode(rawOutput)
+                  .slice(0, -1)
+                  .replace(/file:\/\/\/.+files/gi, ""),
+              );
+            } else {
+              const rawError = await process.stderrOutput();
+              reject(
+                new TextDecoder()
+                  .decode(rawError)
+                  .slice(0, -1)
+                  .replace(/file:\/\/\/.+files/gi, ""),
+              );
+            }
+          } catch (error) {
+            reject(error);
           }
         }, 0);
       });
@@ -92,6 +103,15 @@ export const handleRun = async (context: RouterContext<"/run">) => {
 
       return;
     } catch (error) {
+      if (typeof process !== "undefined") {
+        try {
+          process.kill("SIGTERM");
+          process.kill("SIGINT");
+        } catch (_error) {
+          // not interested
+        }
+      }
+
       context.response.status = 500;
       // console.error(error);
       context.response.body = JSON.stringify({
